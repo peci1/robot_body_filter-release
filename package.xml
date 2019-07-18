@@ -1,0 +1,47 @@
+<package format="2">
+  <name>robot_body_filter</name>
+  <version>1.1.0</version>
+
+  <description>Filters the robot's body out of laser scans or point clouds.</description>
+
+  <license>BSD</license>
+
+  <url type="website">https://github.com/tpet/robot_body_filter</url>
+
+  <author>Eitan Marder-Eppstein</author>
+  <author>Tomas Petricek</author>
+  <author>Martin Pecka</author>
+
+  <maintainer email="peckama2@fel.cvut.cz">Martin Pecka</maintainer>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>filters</depend>
+  <depend>geometric_shapes</depend>
+  <depend>geometry_msgs</depend>
+  <depend>laser_geometry</depend>
+  <depend>moveit_core</depend>
+  <depend>moveit_ros_perception</depend>
+  <depend>roscpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>urdf</depend>
+  <depend>visualization_msgs</depend>
+
+  <build_depend>message_generation</build_depend>
+  <build_export_depend>message_runtime</build_export_depend>
+  <exec_depend>message_runtime</exec_depend>
+
+  <build_depend>libfcl-dev</build_depend>
+  <exec_depend>libfcl-dev</exec_depend>
+
+  <build_depend>pkg-config</build_depend>
+  <build_depend>tf2_eigen</build_depend>
+  <build_depend>tf2_sensor_msgs</build_depend>
+
+  <export>
+    <filters plugin="${prefix}/laser_filters.xml"/>
+  </export>
+</package>
