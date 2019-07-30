@@ -2,6 +2,11 @@
 Changelog for package robot_body_filter
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+1.1.1 (2019-07-30)
+------------------
+* Fixed dependencies
+* Contributors: Martin Pecka
+
 1.1.0 (2019-07-18)
 ------------------
 * Increasing performance.
