@@ -291,9 +291,12 @@ protected:
    *                            channels vp_x, vp_y and vp_z.
    * \param mask Output mask of the points. Indices to the mask are taken from
    *             the INDEX channel.
+   * \param sensorFrame Sensor frame id
    * \return Whether the computation succeeded.
    */
-  bool computeMask(const sensor_msgs::PointCloud2& projectedPointCloud, std::vector<RayCastingShapeMask::MaskValue>& mask);
+  bool computeMask(const sensor_msgs::PointCloud2& projectedPointCloud,
+                   std::vector<RayCastingShapeMask::MaskValue>& mask,
+                   const std::string& sensorFrame);
 
   /** \brief Return the latest cached transform for the link corresponding to the given shape handle.
    *
