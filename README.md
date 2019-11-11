@@ -1,3 +1,26 @@
+## robot_body_filter (melodic) - 1.1.6-1
+
+The packages in the `robot_body_filter` repository were released into the `melodic` distro by running `/usr/bin/bloom-release -t melodic --ros-distro melodic robot_body_filter` on `Mon, 11 Nov 2019 14:42:14 -0000`
+
+The `robot_body_filter` package was released.
+
+Version of package(s) in repository `robot_body_filter`:
+
+- upstream repository: https://github.com/peci1/robot_body_filter
+- release repository: https://github.com/peci1/robot_body_filter-release.git
+- rosdistro version: `1.1.5-1`
+- old version: `1.1.5-1`
+- new version: `1.1.6-1`
+
+Versions of tools used:
+
+- bloom version: `0.9.0`
+- catkin_pkg version: `0.4.14`
+- rosdep version: `0.17.1`
+- rosdistro version: `0.7.5`
+- vcstools version: `0.1.42`
+
+
 ## robot_body_filter (melodic) - 1.1.5-1
 
 The packages in the `robot_body_filter` repository were released into the `melodic` distro by running `/usr/bin/bloom-release --track melodic -r melodic robot_body_filter` on `Fri, 08 Nov 2019 16:33:25 -0000`
