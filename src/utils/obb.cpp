@@ -72,9 +72,14 @@ void OBB::getPose(Eigen::Isometry3d& pose) const
 {
   pose = Eigen::Isometry3d::Identity();
   pose.translation() = fromFcl(obb_->To);
-  pose.linear().col(0) = fromFcl(obb_->axis[0]);
-  pose.linear().col(1) = fromFcl(obb_->axis[1]);
-  pose.linear().col(2) = fromFcl(obb_->axis[2]);
+  // If all axes are zero, we report the rotation as identity
+  // This happens if OBB is default-constructed
+  if (!obb_->axis[0].isZero() && !obb_->axis[3].isZero() && !obb_->axis[2].isZero())
+  {
+    pose.linear().col(0) = fromFcl(obb_->axis[0]);
+    pose.linear().col(1) = fromFcl(obb_->axis[1]);
+    pose.linear().col(2) = fromFcl(obb_->axis[2]);
+  }
 }
 
 Eigen::Isometry3d OBB::getPose() const
@@ -116,7 +121,7 @@ bool OBB::overlaps(const bodies::OBB& other) const
 
 EigenSTL::vector_Vector3d OBB::computeVertices() const
 {
-  const auto e = getExtents() / 2;
+  const Eigen::Vector3d e = getExtents() / 2; // do not use auto type, Eigen would be inefficient
   EigenSTL::vector_Vector3d result = {
       { -e[0], -e[1], -e[2] },
       { -e[0], -e[1],  e[2] },
@@ -138,7 +143,7 @@ EigenSTL::vector_Vector3d OBB::computeVertices() const
 
 bool OBB::contains(const OBB& obb) const
 {
-  for (const auto& v : computeVertices()) {
+  for (const auto& v : obb.computeVertices()) {
     if (!contains(v))
       return false;
   }

@@ -20,9 +20,13 @@ protected:
    *        specified default value, and print out a ROS info/warning message with
    *        the loaded values.
    * \tparam T Param type.
-   * \param name Name of the parameter.
+   * \param name Name of the parameter. If the name contains slashes and the full name is not found,
+   *             a "recursive" search is tried using the parts of the name separated by slashes.
+   *             This is useful if the filter config isn't loaded via a filterchain config, but via
+   *             a dict loaded directly to ROS parameter server.
    * \param defaultValue The default value to use.
-   * \param unit Optional string serving as a [physical/SI] unit of the parameter, just to make the messages more informative.
+   * \param unit Optional string serving as a [physical/SI] unit of the parameter, just to make the
+   *             messages more informative.
    * \return The loaded param value.
    */
   template< typename T>
@@ -37,15 +41,58 @@ protected:
         prependIfNonEmpty(unit, " "));
       return value;
     }
-    else
+
+    // The parameter has slashes in its name, so try a "recursive" search
+    if (name.length() > 1 && name.find_first_of('/', 1) != std::string::npos)
     {
-      ROS_WARN_STREAM(this->getName() << ": Cannot find value for parameter: "
-        << name << ", assigning default: " << to_string(defaultValue)
-        << prependIfNonEmpty(unit, " "));
+      auto slashPos = name.find_first_of('/', 1);
+      auto head = name.substr(0, slashPos);
+      auto tail = name.substr(slashPos + 1);
+      XmlRpc::XmlRpcValue val;
+
+      if (filters::FilterBase<F>::getParam(head, val))
+      {
+        while (val.getType() == XmlRpc::XmlRpcValue::TypeStruct)
+        {
+          if (val.hasMember(tail))
+          {
+            filters::FilterBase<F>::params_[name] = val[tail];
+            return this->getParamVerbose(name, defaultValue, unit);
+          } else {
+            slashPos = tail.find_first_of('/', 1);
+            if (slashPos == std::string::npos)
+              break;
+            head = tail.substr(0, slashPos);
+            tail = tail.substr(slashPos + 1);
+            if (!val.hasMember(head))
+              break;
+            XmlRpc::XmlRpcValue tmp = val[head]; // tmp copy is required, otherwise mem corruption
+            val = tmp;
+            if (!val.valid())
+              break;
+          }
+        }
+      }
     }
+
+    ROS_WARN_STREAM(this->getName() << ": Cannot find value for parameter: "
+      << name << ", assigning default: " << to_string(defaultValue)
+      << prependIfNonEmpty(unit, " "));
     return defaultValue;
   }
 
+  /** \brief Get the value of the given filter parameter, falling back to the
+   *        specified default value, and print out a ROS info/warning message with
+   *        the loaded values.
+   * \param name Name of the parameter. If the name contains slashes and the full name is not found,
+   *             a "recursive" search is tried using the parts of the name separated by slashes.
+   *             This is useful if the filter config isn't loaded via a filterchain config, but via
+   *             a dict loaded directly to ROS parameter server.
+   * \param defaultValue The default value to use.
+   * \param unit Optional string serving as a [physical/SI] unit of the parameter, just to make the
+   *             messages more informative.
+   * \return The loaded param value.
+   */
   std::string getParamVerbose(const std::string &name, const char* defaultValue,
                               const std::string &unit = "")
   {
@@ -56,6 +103,19 @@ protected:
 
   // getParam specializations for unsigned values
 
+  /** \brief Get the value of the given filter parameter, falling back to the
+   *        specified default value, and print out a ROS info/warning message with
+   *        the loaded values.
+   * \param name Name of the parameter. If the name contains slashes and the full name is not found,
+   *             a "recursive" search is tried using the parts of the name separated by slashes.
+   *             This is useful if the filter config isn't loaded via a filterchain config, but via
+   *             a dict loaded directly to ROS parameter server.
+   * \param defaultValue The default value to use.
+   * \param unit Optional string serving as a [physical/SI] unit of the parameter, just to make the
+   *             messages more informative.
+   * \return The loaded param value.
+   * \throw std::invalid_argument If the loaded value is negative.
+   */
   uint64_t getParamVerbose(const std::string &name, const uint64_t &defaultValue,
                            const std::string &unit = "")
   {
@@ -65,16 +125,40 @@ protected:
   // there actually is an unsigned int implementation of FilterBase::getParam,
   // but it doesn't tell you when the passed value is negative - instead it just
   // returns false
+  /** \brief Get the value of the given filter parameter, falling back to the
+   *        specified default value, and print out a ROS info/warning message with
+   *        the loaded values.
+   * \param name Name of the parameter. If the name contains slashes and the full name is not found,
+   *             a "recursive" search is tried using the parts of the name separated by slashes.
+   *             This is useful if the filter config isn't loaded via a filterchain config, but via
+   *             a dict loaded directly to ROS parameter server.
+   * \param defaultValue The default value to use.
+   * \param unit Optional string serving as a [physical/SI] unit of the parameter, just to make the
+   *             messages more informative.
+   * \return The loaded param value.
+   * \throw std::invalid_argument If the loaded value is negative.
+   */
   unsigned int getParamVerbose(const std::string &name,
                                const unsigned int &defaultValue,
                                const std::string &unit = "")
   {
-    return this->getParamUnsigned<unsigned int, int, F>(name, defaultValue,
-      unit);
+    return this->getParamUnsigned<unsigned int, int>(name, defaultValue, unit);
   }
 
   // ROS types specializations
 
+  /** \brief Get the value of the given filter parameter, falling back to the
+   *        specified default value, and print out a ROS info/warning message with
+   *        the loaded values.
+   * \param name Name of the parameter. If the name contains slashes and the full name is not found,
+   *             a "recursive" search is tried using the parts of the name separated by slashes.
+   *             This is useful if the filter config isn't loaded via a filterchain config, but via
+   *             a dict loaded directly to ROS parameter server.
+   * \param defaultValue The default value to use.
+   * \param unit Optional string serving as a [physical/SI] unit of the parameter, just to make the
+   *             messages more informative.
+   * \return The loaded param value.
+   */
   ros::Duration getParamVerbose(const std::string &name,
                                 const ros::Duration &defaultValue,
                                 const std::string &unit = "")
@@ -83,12 +167,26 @@ protected:
       unit);
   }
 
+  /** \brief Get the value of the given filter parameter as a set of strings, falling back to the
+   *        specified default value, and print out a ROS info/warning message with
+   *        the loaded values.
+   * \tparam Foo Ignored. Just needed for compilation to succeed.
+   * \param name Name of the parameter. If the name contains slashes and the full name is not found,
+   *             a "recursive" search is tried using the parts of the name separated by slashes.
+   *             This is useful if the filter config isn't loaded via a filterchain config, but via
+   *             a dict loaded directly to ROS parameter server.
+   * \param defaultValue The default value to use.
+   * \param unit Optional string serving as a [physical/SI] unit of the parameter, just to make the
+   *             messages more informative.
+   * \return The loaded param value.
+   * \throw std::invalid_argument If the loaded value is negative.
+   */
   template<typename Foo>
-  std::set<std::string> getParamVerboseSet(const std::string &name,
-                                           const std::set<std::string> &defaultValue = std::set<std::string>(),
-                                           const std::string &unit = "")
+  std::set<std::string> getParamVerboseSet(
+      const std::string &name,
+      const std::set<std::string> &defaultValue = std::set<std::string>(),
+      const std::string &unit = "")
   {
-
     std::vector<std::string> vector(defaultValue.begin(), defaultValue.end());
     vector = this->getParamVerbose(name, vector, unit);
     return std::set<std::string>(vector.begin(), vector.end());
