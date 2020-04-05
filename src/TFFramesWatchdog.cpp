@@ -19,6 +19,7 @@ TFFramesWatchdog::TFFramesWatchdog(std::string robotFrame,
 }
 
 void TFFramesWatchdog::start() {
+  this->shouldStop = false;
   this->thisThread = std::thread(&TFFramesWatchdog::run, this);
   this->unpause();
 }
@@ -32,6 +33,10 @@ void TFFramesWatchdog::run() {
     }
     this->unreachableFramesCheckRate.sleep();
   }
+}
+
+bool TFFramesWatchdog::isRunning() const {
+  return this->started;
 }
 
 void TFFramesWatchdog::searchForReachableFrames()
@@ -82,7 +87,10 @@ void TFFramesWatchdog::unpause() {
 void TFFramesWatchdog::stop() {
   ROS_INFO("Stopping TF watchdog.");
   this->shouldStop = true;
-  this->thisThread.join(); // segfaults without this line
+  this->paused = true;
+
+  if (this->started && this->thisThread.joinable())
+    this->thisThread.join(); // segfaults without this line
   ROS_INFO("TF watchdog stopped.");
 }
 
@@ -102,9 +110,21 @@ optional<geometry_msgs::TransformStamped> TFFramesWatchdog::lookupTransform(
   if (!this->started)
     throw std::runtime_error("TFFramesWatchdog has not been started.");
 
-  // Return immediately for unreachable frames
-  if (!this->isReachable(frame))
-    return nullopt;
+  {
+    std::lock_guard<std::mutex> guard(this->framesMutex);
+    if (!this->isMonitoredNoLock(frame))
+    {
+      ROS_WARN("TFFramesWatchdog (%s): Frame %s is not yet monitored, starting "
+          "monitoring it.", this->robotFrame.c_str(), frame.c_str());
+      this->addMonitoredFrameNoLock(frame);
+      // this lookup is lost, same as if the frame is unreachable
+      return nullopt;
+    }
+
+    // Return immediately for unreachable frames
+    if (!this->isReachableNoLock(frame))
+      return nullopt;
+  }
 
   std::string tmpErrstr;
   if (errstr == nullptr) {
@@ -148,6 +168,18 @@ void TFFramesWatchdog::setMonitoredFrames(std::set<std::string> monitoredFrames)
       this->reachableFrames.erase(frame);
   }
 }
+
+void TFFramesWatchdog::addMonitoredFrame(const std::string& monitoredFrame)
+{
+  std::lock_guard<std::mutex> guard(this->framesMutex);
+  this->addMonitoredFrameNoLock(monitoredFrame);
+}
+
+void TFFramesWatchdog::addMonitoredFrameNoLock(const std::string& monitoredFrame)
+{
+  this->monitoredFrames.insert(monitoredFrame);
+}
+
 bool TFFramesWatchdog::isReachable(const std::string &frame) const
 {
   std::lock_guard<std::mutex> guard(this->framesMutex);
@@ -166,6 +198,26 @@ void TFFramesWatchdog::markUnreachable(const std::string &frame)
 {
   std::lock_guard<std::mutex> guard(this->framesMutex);
   this->reachableFrames.erase(frame);
+}
+
+bool TFFramesWatchdog::areAllFramesReachable() const
+{
+  std::lock_guard<std::mutex> guard(this->framesMutex);
+  return this->reachableFrames.size() == this->monitoredFrames.size();
+}
+bool TFFramesWatchdog::isMonitored(const std::string &frame) const
+{
+  std::lock_guard<std::mutex> guard(this->framesMutex);
+  return this->isMonitoredNoLock(frame);
+}
+bool TFFramesWatchdog::isMonitoredNoLock(const std::string &frame) const
+{
+  return this->monitoredFrames.find(frame) != this->monitoredFrames.end();
+}
+
+TFFramesWatchdog::~TFFramesWatchdog()
+{
+  this->stop();
 }
 
 }

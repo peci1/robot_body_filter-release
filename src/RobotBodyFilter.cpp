@@ -26,6 +26,7 @@
 #include <tf2_eigen/tf2_eigen.h>
 
 #include <robot_body_filter/utils/bodies.h>
+#include <robot_body_filter/utils/crop_box.h>
 #include <robot_body_filter/utils/set_utils.hpp>
 #include <robot_body_filter/utils/shapes.h>
 #include <robot_body_filter/utils/string_utils.hpp>
@@ -76,6 +77,7 @@ bool RobotBodyFilter<T>::configure() {
   const bool doShadowTest = this->getParamVerbose("filter/do_shadow_test", true);
   this->reachableTransformTimeout = this->getParamVerbose("transforms/timeout/reachable", ros::Duration(0.1), "s");
   this->unreachableTransformTimeout = this->getParamVerbose("transforms/timeout/unreachable", ros::Duration(0.2), "s");
+  this->requireAllFramesReachable = this->getParamVerbose("transforms/require_all_reachable", false);
   this->publishNoBoundingSpherePointcloud = this->getParamVerbose("bounding_sphere/publish_cut_out_pointcloud", false);
   this->publishNoBoundingBoxPointcloud = this->getParamVerbose("bounding_box/publish_cut_out_pointcloud", false);
   this->publishNoOrientedBoundingBoxPointcloud = this->getParamVerbose("oriented_bounding_box/publish_cut_out_pointcloud", false);
@@ -218,10 +220,30 @@ bool RobotBodyFilter<T>::configure() {
       this->minDistance, this->maxDistance,
       doClipping, doContainsTest, doShadowTest);
 
+  // the other case happens when configure() is called again from update() (e.g. when a new bag file
+  // started playing)
+  if (this->tfFramesWatchdog == nullptr) {
+    std::set<std::string> initialMonitoredFrames;
+    if (!this->sensorFrame.empty())
+    {
+      initialMonitoredFrames.insert(this->sensorFrame);
+    }
+
+    this->tfFramesWatchdog = std::make_shared<TFFramesWatchdog>(this->filteringFrame,
+        initialMonitoredFrames, this->tfBuffer,
+        this->unreachableTransformTimeout, ros::Rate(ros::Duration(1.0)));
+    this->tfFramesWatchdog->start();
+  }
+
   { // initialize the robot body to be masked out
 
     string robotUrdf;
     while (!this->nodeHandle.getParam(this->robotDescriptionParam, robotUrdf) || robotUrdf.length() == 0) {
+      if (this->failWithoutRobotDescription)
+      {
+        throw std::runtime_error(
+            "RobotBodyFilter: " + this->robotDescriptionParam + " is empty or not set.");
+      }
       if (!ros::ok())
         return false;
 
@@ -230,24 +252,11 @@ bool RobotBodyFilter<T>::configure() {
       ros::Duration(1.0).sleep();
     }
 
+    // happens when configure() is called again from update() (e.g. when a new bag file started
+    // playing)
     if (!this->shapesToLinks.empty())
       this->clearRobotMask();
     this->addRobotMaskFromUrdf(robotUrdf);
-  }
-
-  if (this->tfFramesWatchdog == nullptr) {
-    std::set<std::string> monitoredFrames;
-    for (const auto& shapeToLink : this->shapesToLinks)
-      monitoredFrames.insert(shapeToLink.second.link->name);
-
-    this->tfFramesWatchdog = std::make_shared<TFFramesWatchdog>(this->filteringFrame,
-        monitoredFrames, this->tfBuffer, this->unreachableTransformTimeout,
-        ros::Rate(ros::Duration(1.0)));
-    this->tfFramesWatchdog->start();
-  } else {
-    this->tfFramesWatchdog->pause();
-    this->tfFramesWatchdog->clear();
-    this->tfFramesWatchdog->unpause();
   }
 
   ROS_INFO("RobotBodyFilter: Successfully configured.");
@@ -308,23 +317,23 @@ bool RobotBodyFilter<T>::computeMask(
   const clock_t stopwatchOverall = clock();
   const auto& scanTime = projectedPointCloud.header.stamp;
 
-  Eigen::Vector3d sensorPosition;
-  try {
-    const auto sensorTf = this->tfBuffer->lookupTransform(
-        this->filteringFrame, sensorFrame, scanTime,
-        remainingTime(scanTime, this->reachableTransformTimeout));
-    tf2::fromMsg(sensorTf.transform.translation, sensorPosition);
-  } catch (tf2::TransformException& e) {
-    ROS_ERROR("RobotBodyFilter: Could not compute filtering mask do to this "
-              "TF exception: %s", e.what());
-    return false;
-  }
-
   // compute a mask of point indices for points from projectedPointCloud
   // that tells if they are inside or outside robot, or shadow points
 
   if (!this->pointByPointScan)
   {
+    Eigen::Vector3d sensorPosition;
+    try {
+      const auto sensorTf = this->tfBuffer->lookupTransform(
+          this->filteringFrame, sensorFrame, scanTime,
+          remainingTime(scanTime, this->reachableTransformTimeout));
+      tf2::fromMsg(sensorTf.transform.translation, sensorPosition);
+    } catch (tf2::TransformException& e) {
+      ROS_ERROR("RobotBodyFilter: Could not compute filtering mask due to this "
+                "TF exception: %s", e.what());
+      return false;
+    }
+
     // update transforms cache, which is then used in body masking
     this->updateTransformCache(scanTime);
 
@@ -339,7 +348,6 @@ bool RobotBodyFilter<T>::computeMask(
     CloudConstIter vp_y_it(projectedPointCloud, "vp_y");
     CloudConstIter vp_z_it(projectedPointCloud, "vp_z");
     CloudConstIter stamps_it(projectedPointCloud, "stamps");
-    CloudIndexConstIter index_it(projectedPointCloud, "index");
 
     pointMask.resize(num_points(projectedPointCloud));
 
@@ -377,7 +385,8 @@ bool RobotBodyFilter<T>::computeMask(
     Eigen::Vector3d viewPoint;
     RayCastingShapeMask::MaskValue mask;
 
-    for (size_t i = 0; i < num_points(projectedPointCloud); ++i, ++x_it, ++y_it, ++z_it, ++vp_x_it, ++vp_y_it, ++vp_z_it, ++stamps_it, ++index_it)
+    this->cacheLookupBetweenScansRatio = 0.0;
+    for (size_t i = 0; i < num_points(projectedPointCloud); ++i, ++x_it, ++y_it, ++z_it, ++vp_x_it, ++vp_y_it, ++vp_z_it, ++stamps_it)
     {
       point.x() = *x_it;
       point.y() = *y_it;
@@ -389,7 +398,7 @@ bool RobotBodyFilter<T>::computeMask(
 
       const auto updateBodyPoses = i % updateBodyPosesEvery == 0;
 
-      if (updateBodyPoses)
+      if (updateBodyPoses && scanDuration > 0.0)
         this->cacheLookupBetweenScansRatio = static_cast<double>(*stamps_it) / scanDuration;
 
       // updates shapes according to tf cache (by calling getShapeTransform
@@ -428,13 +437,12 @@ bool RobotBodyFilterLaserScan::update(const LaserScan &inputScan, LaserScan &fil
   }
 
   if ((scanTime < timeConfigured) && ((scanTime + tfBufferLength) < timeConfigured)) {
-    ROS_WARN("RobotBodyFilter: Old TF data received. Clearing TF buffer and reconfiguring laser filter. If you're replaying a "
-             "bag file, make sure rosparam /use_sim_time is set to true");
+    ROS_WARN("RobotBodyFilter: Old TF data received. Clearing TF buffer and reconfiguring laser"
+             "filter. If you're replaying a bag file, make sure rosparam /use_sim_time is set to "
+             "true");
     this->configure();
     return false;
   }
-
-  const clock_t stopwatchOverall = clock();
 
   // tf2 doesn't like frames starting with slash
   const auto scanFrame = stripLeadingSlash(inputScan.header.frame_id, true);
@@ -443,8 +451,27 @@ bool RobotBodyFilterLaserScan::update(const LaserScan &inputScan, LaserScan &fil
   if (!this->sensorFrame.empty() && this->sensorFrame != scanFrame) {
     ROS_WARN_ONCE("RobotBodyFilter: frames/sensor is set to frame_id '%s' different than "
                   "the frame_id of the incoming message '%s'. This is an invalid configuration: "
-                  "the frames/sensor parameter will be neglected.", this->sensorFrame.c_str(), scanFrame.c_str());
+                  "the frames/sensor parameter will be neglected.",
+                  this->sensorFrame.c_str(), scanFrame.c_str());
   }
+
+  if (!this->tfFramesWatchdog->isReachable(scanFrame))
+  {
+    ROS_DEBUG("RobotBodyFilter: Throwing away scan since sensor frame is unreachable.");
+    // if this->sensorFrame is empty, it can happen that we're not actually monitoring the sensor
+    // frame, so start monitoring it
+    if (!this->tfFramesWatchdog->isMonitored(scanFrame))
+      this->tfFramesWatchdog->addMonitoredFrame(scanFrame);
+    return false;
+  }
+
+  if (this->requireAllFramesReachable && !this->tfFramesWatchdog->areAllFramesReachable())
+  {
+    ROS_DEBUG("RobotBodyFilter: Throwing away scan since not all frames are reachable.");
+    return false;
+  }
+
+  const clock_t stopwatchOverall = clock();
 
   // create the output copy of the input scan
   filteredScan = inputScan;
@@ -533,7 +560,7 @@ bool RobotBodyFilterLaserScan::update(const LaserScan &inputScan, LaserScan &fil
     ROS_DEBUG("RobotBodyFilter: Scan transformation run time is %.5f secs.", double(clock()-stopwatchOverall) / CLOCKS_PER_SEC);
 
     vector<RayCastingShapeMask::MaskValue> pointMask;
-    const auto success = this->computeMask(projectedPointCloud, pointMask, scanFrame);
+    const auto success = this->computeMask(projectedPointCloud, pointMask);
     if (!success)
       return false;
 
@@ -590,6 +617,25 @@ bool RobotBodyFilterPointCloud2::update(const sensor_msgs::PointCloud2 &inputClo
              "reconfiguring laser filter. If you're replaying a bag file, make "
              "sure rosparam /use_sim_time is set to true");
     this->configure();
+    return false;
+  }
+
+  const auto inputCloudFrame = this->sensorFrame.empty() ?
+      stripLeadingSlash(inputCloud.header.frame_id, true) : this->sensorFrame;
+
+  if (!this->tfFramesWatchdog->isReachable(inputCloudFrame))
+  {
+    ROS_DEBUG("RobotBodyFilter: Throwing away scan since sensor frame is unreachable.");
+    // if this->sensorFrame is empty, it can happen that we're not actually monitoring the cloud
+    // frame, so start monitoring it
+    if (!this->tfFramesWatchdog->isMonitored(inputCloudFrame))
+      this->tfFramesWatchdog->addMonitoredFrame(inputCloudFrame);
+    return false;
+  }
+
+  if (this->requireAllFramesReachable && !this->tfFramesWatchdog->areAllFramesReachable())
+  {
+    ROS_DEBUG("RobotBodyFilter: Throwing away scan since not all frames are reachable.");
     return false;
   }
 
@@ -654,14 +700,11 @@ bool RobotBodyFilterPointCloud2::update(const sensor_msgs::PointCloud2 &inputClo
   }
 
   // Compute the mask and use it (transform message only if sensorFrame is specified)
-  const auto cloudFrame = this->sensorFrame.empty() ?
-        stripLeadingSlash(inputCloud.header.frame_id, true) : this->sensorFrame;
-
   vector<RayCastingShapeMask::MaskValue> pointMask;
   {
     std::lock_guard<std::mutex> guard(*this->modelMutex);
 
-    const auto success = this->computeMask(transformedCloud, pointMask, cloudFrame);
+    const auto success = this->computeMask(transformedCloud, pointMask, inputCloudFrame);
     if (!success)
       return false;
   }
@@ -716,7 +759,8 @@ bool RobotBodyFilter<T>::getShapeTransform(point_containment_filter::ShapeHandle
   if (!this->pointByPointScan) {
     transform = *this->transformCache.at(collision.cacheKey);
   } else {
-    if (this->transformCacheAfterScan.find(collision.cacheKey) == this->transformCache.end()) {
+    if (this->transformCacheAfterScan.find(collision.cacheKey) ==
+        this->transformCacheAfterScan.end()) {
       // do not log the error because shape mask would do it for us
       return false;
     }
@@ -727,7 +771,7 @@ bool RobotBodyFilter<T>::getShapeTransform(point_containment_filter::ShapeHandle
     const Eigen::Quaterniond quat2(tf1.rotation().matrix());
     const auto r = this->cacheLookupBetweenScansRatio;
 
-    transform.translation() = tf1.translation() * r + tf2.translation() * (1 - r);
+    transform.translation() = tf1.translation() * (1 - r) + tf2.translation() * r;
     const Eigen::Quaterniond quat3 = quat1.slerp(r, quat2);
     transform.linear() = quat3.toRotationMatrix();
   }
@@ -900,6 +944,15 @@ void RobotBodyFilter<T>::addRobotMaskFromUrdf(const string& urdfModel) {
     this->shapeMask->setIgnoreInShadowTest(ignoreInShadowTest);
 
     this->shapeMask->updateInternalShapeLists();
+
+    std::set<std::string> monitoredFrames;
+    for (const auto& shapeToLink : this->shapesToLinks)
+      monitoredFrames.insert(shapeToLink.second.link->name);
+    // Issue #6: Monitor sensor frame even if it is not a part of the model
+    if (!this->sensorFrame.empty())
+      monitoredFrames.insert(this->sensorFrame);
+
+    this->tfFramesWatchdog->setMonitoredFrames(monitoredFrames);
   }
 }
 
@@ -987,6 +1040,14 @@ void RobotBodyFilter<T>::computeAndPublishBoundingSphere(
 
   // assume this->modelMutex is locked
 
+  // when computing bounding spheres for publication, we want to publish them to the time of the
+  // scan, so we need to set cacheLookupBetweenScansRatio again to zero
+  if (this->cacheLookupBetweenScansRatio != 0.0)
+  {
+    this->cacheLookupBetweenScansRatio = 0.0;
+    this->shapeMask->updateBodyPoses();
+  }
+
   const auto& scanTime = projectedPointCloud.header.stamp;
   std::vector<bodies::BoundingSphere> spheres;
   {
@@ -996,22 +1057,23 @@ void RobotBodyFilter<T>::computeAndPublishBoundingSphere(
       const auto &shapeHandle = shapeHandleAndSphere.first;
       const auto &sphere = shapeHandleAndSphere.second;
 
-      if (this->shapesIgnoredInBoundingSphere.find(shapeHandle) == this->shapesIgnoredInBoundingSphere.end())
-      {
-        spheres.push_back(sphere);
-      }
+      if (this->shapesIgnoredInBoundingSphere.find(shapeHandle) != this->shapesIgnoredInBoundingSphere.end())
+        continue;
+
+      spheres.push_back(sphere);
 
       if (this->computeDebugBoundingSphere)
       {
         visualization_msgs::Marker msg;
         msg.header.stamp = scanTime;
-        msg.header.frame_id = this->fixedFrame;
+        msg.header.frame_id = this->filteringFrame;
 
         msg.scale.x = msg.scale.y = msg.scale.z = sphere.radius * 2;
 
         msg.pose.position.x = sphere.center[0];
         msg.pose.position.y = sphere.center[1];
         msg.pose.position.z = sphere.center[2];
+        msg.pose.orientation.w = 1;
 
         msg.color.g = 1.0;
         msg.color.a = 0.5;
@@ -1036,7 +1098,7 @@ void RobotBodyFilter<T>::computeAndPublishBoundingSphere(
 
     robot_body_filter::SphereStamped boundingSphereMsg;
     boundingSphereMsg.header.stamp = scanTime;
-    boundingSphereMsg.header.frame_id = this->fixedFrame;
+    boundingSphereMsg.header.frame_id = this->filteringFrame;
     boundingSphereMsg.sphere.radius =
         static_cast<float>(boundingSphere.radius);
     boundingSphereMsg.sphere.center = tf2::toMsg(boundingSphere.center);
@@ -1047,13 +1109,14 @@ void RobotBodyFilter<T>::computeAndPublishBoundingSphere(
     {
       visualization_msgs::Marker msg;
       msg.header.stamp = scanTime;
-      msg.header.frame_id = this->fixedFrame;
+      msg.header.frame_id = this->filteringFrame;
 
       msg.scale.x = msg.scale.y = msg.scale.z = boundingSphere.radius * 2;
 
       msg.pose.position.x = boundingSphere.center[0];
       msg.pose.position.y = boundingSphere.center[1];
       msg.pose.position.z = boundingSphere.center[2];
+      msg.pose.orientation.w = 1;
 
       msg.color.g = 1.0;
       msg.color.a = 0.5;
@@ -1070,7 +1133,7 @@ void RobotBodyFilter<T>::computeAndPublishBoundingSphere(
       sensor_msgs::PointCloud2 noSphereCloud;
       CREATE_FILTERED_CLOUD(projectedPointCloud, noSphereCloud, this->keepCloudsOrganized,
         ((Eigen::Vector3d(*x_it, *y_it, *z_it)- boundingSphere.center).norm() > boundingSphere.radius));
-      this->scanPointCloudNoBoundingBoxPublisher.publish(noSphereCloud);
+      this->scanPointCloudNoBoundingSpherePublisher.publish(noSphereCloud);
     }
   }
 }
@@ -1084,6 +1147,14 @@ void RobotBodyFilter<T>::computeAndPublishBoundingBox(
 
   // assume this->modelMutex is locked
 
+  // when computing bounding boxes for publication, we want to publish them to the time of the
+  // scan, so we need to set cacheLookupBetweenScansRatio again to zero
+  if (this->cacheLookupBetweenScansRatio != 0.0)
+  {
+    this->cacheLookupBetweenScansRatio = 0.0;
+    this->shapeMask->updateBodyPoses();
+  }
+
   const auto& scanTime = projectedPointCloud.header.stamp;
   std::vector<bodies::AxisAlignedBoundingBox> boxes;
 
@@ -1096,15 +1167,15 @@ void RobotBodyFilter<T>::computeAndPublishBoundingBox(
       bodies::AxisAlignedBoundingBox box;
       bodies::computeBoundingBox(body, box);
 
-      if (this->shapesIgnoredInBoundingBox.find(shapeHandle) == this->shapesIgnoredInBoundingBox.end())
-      {
-        boxes.push_back(box);
-      }
+      if (this->shapesIgnoredInBoundingBox.find(shapeHandle) != this->shapesIgnoredInBoundingBox.end())
+        continue;
+
+      boxes.push_back(box);
 
       if (this->computeDebugBoundingBox) {
         visualization_msgs::Marker msg;
         msg.header.stamp = scanTime;
-        msg.header.frame_id = this->fixedFrame;
+        msg.header.frame_id = this->filteringFrame;
 
         // it is aligned to fixed frame, not necessarily robot frame
         tf2::toMsg(box.sizes(), msg.scale);
@@ -1136,7 +1207,7 @@ void RobotBodyFilter<T>::computeAndPublishBoundingBox(
     geometry_msgs::PolygonStamped boundingBoxMsg;
 
     boundingBoxMsg.header.stamp = scanTime;
-    boundingBoxMsg.header.frame_id = this->fixedFrame;
+    boundingBoxMsg.header.frame_id = this->filteringFrame;
 
     boundingBoxMsg.polygon.points.resize(2);
     tf2::toMsg(box.min(), boundingBoxMsg.polygon.points[0]);
@@ -1148,7 +1219,7 @@ void RobotBodyFilter<T>::computeAndPublishBoundingBox(
     {
       visualization_msgs::Marker msg;
       msg.header.stamp = scanTime;
-      msg.header.frame_id = this->fixedFrame;
+      msg.header.frame_id = this->filteringFrame;
 
       // it is aligned to fixed frame and not necessarily to robot frame
       tf2::toMsg(box.sizes(), msg.scale);
@@ -1171,7 +1242,7 @@ void RobotBodyFilter<T>::computeAndPublishBoundingBox(
       pcl::PCLPointCloud2::Ptr bboxCropInput(new pcl::PCLPointCloud2());
       pcl_conversions::toPCL(projectedPointCloud, *(bboxCropInput));
 
-      pcl::CropBox<pcl::PCLPointCloud2> cropBox;
+      robot_body_filter::CropBoxPointCloud2 cropBox;
       cropBox.setNegative(true);
       cropBox.setInputCloud(bboxCropInput);
       cropBox.setKeepOrganized(this->keepCloudsOrganized);
@@ -1200,6 +1271,14 @@ void RobotBodyFilter<T>::computeAndPublishOrientedBoundingBox(
 
   // assume this->modelMutex is locked
 
+  // when computing bounding boxes for publication, we want to publish them to the time of the
+  // scan, so we need to set cacheLookupBetweenScansRatio again to zero
+  if (this->cacheLookupBetweenScansRatio != 0.0)
+  {
+    this->cacheLookupBetweenScansRatio = 0.0;
+    this->shapeMask->updateBodyPoses();
+  }
+
   const auto& scanTime = projectedPointCloud.header.stamp;
   std::vector<bodies::OrientedBoundingBox> boxes;
 
@@ -1213,15 +1292,15 @@ void RobotBodyFilter<T>::computeAndPublishOrientedBoundingBox(
       bodies::OrientedBoundingBox box;
       bodies::computeBoundingBox(body, box);
 
-      if (this->shapesIgnoredInBoundingBox.find(shapeHandle) == this->shapesIgnoredInBoundingBox.end())
-      {
-        boxes.push_back(box);
-      }
+      if (this->shapesIgnoredInBoundingBox.find(shapeHandle) != this->shapesIgnoredInBoundingBox.end())
+        continue;
+
+      boxes.push_back(box);
 
       if (this->computeDebugOrientedBoundingBox) {
         visualization_msgs::Marker msg;
         msg.header.stamp = scanTime;
-        msg.header.frame_id = this->fixedFrame;
+        msg.header.frame_id = this->filteringFrame;
 
         tf2::toMsg(box.getExtents(), msg.scale);
         msg.pose.position = tf2::toMsg((Eigen::Vector3d)box.getPose().translation());
@@ -1251,7 +1330,7 @@ void RobotBodyFilter<T>::computeAndPublishOrientedBoundingBox(
     robot_body_filter::OrientedBoundingBoxStamped boundingBoxMsg;
 
     boundingBoxMsg.header.stamp = scanTime;
-    boundingBoxMsg.header.frame_id = this->fixedFrame;
+    boundingBoxMsg.header.frame_id = this->filteringFrame;
 
     tf2::toMsg(box.getExtents(), boundingBoxMsg.obb.extents);
     tf2::toMsg(box.getPose().translation(), boundingBoxMsg.obb.pose.translation);
@@ -1263,7 +1342,7 @@ void RobotBodyFilter<T>::computeAndPublishOrientedBoundingBox(
     {
       visualization_msgs::Marker msg;
       msg.header.stamp = scanTime;
-      msg.header.frame_id = this->fixedFrame;
+      msg.header.frame_id = this->filteringFrame;
 
       tf2::toMsg(box.getExtents(), msg.scale);
       msg.pose.position = tf2::toMsg((Eigen::Vector3d)box.getPose().translation());
@@ -1285,7 +1364,7 @@ void RobotBodyFilter<T>::computeAndPublishOrientedBoundingBox(
       pcl::PCLPointCloud2::Ptr bboxCropInput(new pcl::PCLPointCloud2());
       pcl_conversions::toPCL(projectedPointCloud, *(bboxCropInput));
 
-      pcl::CropBox<pcl::PCLPointCloud2> cropBox;
+      robot_body_filter::CropBoxPointCloud2 cropBox;
       cropBox.setNegative(true);
       cropBox.setInputCloud(bboxCropInput);
       cropBox.setKeepOrganized(this->keepCloudsOrganized);
@@ -1293,7 +1372,8 @@ void RobotBodyFilter<T>::computeAndPublishOrientedBoundingBox(
       const auto e = box.getExtents();
       cropBox.setMin(Eigen::Vector4f(-e.x()/2, -e.y()/2, -e.z()/2, 0.0));
       cropBox.setMax(Eigen::Vector4f(e.x()/2, e.y()/2, e.z()/2, 0.0));
-      cropBox.setTransform(box.getPose().cast<float>());
+      cropBox.setTranslation(box.getPose().translation().cast<float>());
+      cropBox.setRotation(box.getPose().linear().eulerAngles(0, 1, 2).cast<float>());
 
       pcl::PCLPointCloud2 pclOutput;
       cropBox.filter(pclOutput);
@@ -1320,24 +1400,24 @@ void RobotBodyFilter<T>::computeAndPublishLocalBoundingBox(
   std::string err;
   try {
     if (!this->tfBuffer->canTransform(this->localBoundingBoxFrame,
-                                      this->fixedFrame,
+                                      this->filteringFrame,
                                       scanTime,
                                       remainingTime(scanTime, this->reachableTransformTimeout),
                                       &err)) {
       ROS_ERROR_DELAYED_THROTTLE(3.0, "Cannot get transform %s->%s. Error is %s.",
-                         this->fixedFrame.c_str(),
+                         this->filteringFrame.c_str(),
                          this->localBoundingBoxFrame.c_str(), err.c_str());
       return;
     }
   } catch (tf2::TransformException& e) {
     ROS_ERROR_DELAYED_THROTTLE(3.0, "Cannot get transform %s->%s. Error is %s.",
-                       this->fixedFrame.c_str(),
+                       this->filteringFrame.c_str(),
                        this->localBoundingBoxFrame.c_str(), e.what());
     return;
   }
 
   const auto localTfMsg = this->tfBuffer->lookupTransform(this->localBoundingBoxFrame,
-      this->fixedFrame, scanTime);
+      this->filteringFrame, scanTime);
   Eigen::Isometry3d localTf, oldPose;
   localTf = tf2::transformToEigen(localTfMsg.transform);
 
@@ -1350,16 +1430,16 @@ void RobotBodyFilter<T>::computeAndPublishLocalBoundingBox(
       const auto& shapeHandle = shapeHandleAndBody.first;
       const auto& body = shapeHandleAndBody.second;
 
+      if (this->shapesIgnoredInBoundingBox.find(shapeHandle) != this->shapesIgnoredInBoundingBox.end())
+        continue;
+
       bodies::AxisAlignedBoundingBox box;
       oldPose = body->getPose();
       body->setPose(localTf * oldPose);
       bodies::computeBoundingBox(body, box);
       body->setPose(oldPose);
 
-      if (this->shapesIgnoredInBoundingBox.find(shapeHandle) == this->shapesIgnoredInBoundingBox.end())
-      {
-        boxes.push_back(box);
-      }
+      boxes.push_back(box);
 
       if (this->computeDebugLocalBoundingBox) {
         visualization_msgs::Marker msg;
@@ -1428,13 +1508,16 @@ void RobotBodyFilter<T>::computeAndPublishLocalBoundingBox(
       pcl::PCLPointCloud2::Ptr bboxCropInput(new pcl::PCLPointCloud2());
       pcl_conversions::toPCL(projectedPointCloud, *(bboxCropInput));
 
-      pcl::CropBox<pcl::PCLPointCloud2> cropBox;
+      robot_body_filter::CropBoxPointCloud2 cropBox;
       cropBox.setNegative(true);
       cropBox.setInputCloud(bboxCropInput);
       cropBox.setKeepOrganized(this->keepCloudsOrganized);
 
       cropBox.setMin(Eigen::Vector4f(box.min()[0], box.min()[1], box.min()[2], 0.0));
       cropBox.setMax(Eigen::Vector4f(box.max()[0], box.max()[1], box.max()[2], 0.0));
+      const Eigen::Transform localTfInv = localTf.inverse();
+      cropBox.setTranslation(localTfInv.translation().cast<float>());
+      cropBox.setRotation(localTfInv.linear().eulerAngles(0, 1, 2).cast<float>());
 
       pcl::PCLPointCloud2 pclOutput;
       cropBox.filter(pclOutput);
@@ -1454,6 +1537,14 @@ void RobotBodyFilter<T>::createBodyVisualizationMsg(
     const ros::Time& stamp, const std_msgs::ColorRGBA& color,
     visualization_msgs::MarkerArray& markerArray) const
 {
+  // when computing the markers for publication, we want to publish them to the time of the
+  // scan, so we need to set cacheLookupBetweenScansRatio again to zero
+  if (this->cacheLookupBetweenScansRatio != 0.0)
+  {
+    this->cacheLookupBetweenScansRatio = 0.0;
+    this->shapeMask->updateBodyPoses();
+  }
+
   for (const auto &shapeHandleAndBody : bodies)
   {
     const auto &shapeHandle = shapeHandleAndBody.first;
@@ -1463,7 +1554,7 @@ void RobotBodyFilter<T>::createBodyVisualizationMsg(
     bodies::constructMarkerFromBody(body, msg);
 
     msg.header.stamp = stamp;
-    msg.header.frame_id = this->fixedFrame;
+    msg.header.frame_id = this->filteringFrame;
 
     msg.color = color;
     msg.action = visualization_msgs::Marker::ADD;
@@ -1536,7 +1627,8 @@ bool RobotBodyFilter<T>::triggerModelReload(std_srvs::TriggerRequest &,
 
 template<typename T>
 RobotBodyFilter<T>::~RobotBodyFilter(){
-  this->tfFramesWatchdog->stop();
+  if (this->tfFramesWatchdog != nullptr)
+    this->tfFramesWatchdog->stop();
 }
 
 }
