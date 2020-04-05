@@ -39,6 +39,7 @@ include_directories(include ${catkin_INCLUDE_DIRS} ${PCL_INCLUDE_DIRS})
 add_library(${PROJECT_NAME}_utils
   src/utils/bodies.cpp
   src/utils/cloud.cpp
+  src/utils/crop_box.cpp
   src/utils/obb.cpp
   src/utils/shapes.cpp
   src/utils/string_utils.cpp
@@ -46,7 +47,7 @@ add_library(${PROJECT_NAME}_utils
   src/utils/tf2_sensor_msgs.cpp
   src/utils/time_utils.cpp
 )
-target_link_libraries(${PROJECT_NAME}_utils ${catkin_LIBRARIES} ${LIBFCL_LIBRARIES})
+target_link_libraries(${PROJECT_NAME}_utils ${catkin_LIBRARIES} ${LIBFCL_LIBRARIES} ${PCL_LIBRARIES})
 
 add_library(${PROJECT_NAME}
   src/RobotBodyFilter.cpp
@@ -68,3 +69,54 @@ install(FILES laser_filters.xml
 
 install(FILES rviz/debug.rviz
     DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/rviz)
+
+if (CATKIN_ENABLE_TESTING)
+  find_package(rostest REQUIRED)
+
+  catkin_add_gtest(test_set_utils test/test_set_utils.cpp)
+  target_link_libraries(test_set_utils ${PROJECT_NAME}_utils ${catkin_LIBRARIES})
+
+  catkin_add_gtest(test_shapes test/test_shapes.cpp)
+  target_link_libraries(test_shapes ${PROJECT_NAME}_utils ${catkin_LIBRARIES})
+
+  catkin_add_gtest(test_urdf_eigen test/test_urdf_eigen.cpp)
+  target_link_libraries(test_urdf_eigen ${PROJECT_NAME}_utils ${catkin_LIBRARIES})
+
+  catkin_add_gtest(test_time_utils test/test_time_utils.cpp)
+  target_link_libraries(test_time_utils ${PROJECT_NAME}_utils ${catkin_LIBRARIES})
+
+  catkin_add_gtest(test_tf2_eigen test/test_tf2_eigen.cpp)
+  target_link_libraries(test_tf2_eigen ${PROJECT_NAME}_utils ${catkin_LIBRARIES})
+
+  catkin_add_gtest(test_string_utils test/test_string_utils.cpp)
+  target_link_libraries(test_string_utils ${PROJECT_NAME}_utils ${catkin_LIBRARIES})
+
+  catkin_add_gtest(test_bodies test/test_bodies.cpp)
+  target_link_libraries(test_bodies ${PROJECT_NAME}_utils ${catkin_LIBRARIES})
+
+  catkin_add_gtest(test_cloud test/test_cloud.cpp)
+  target_link_libraries(test_cloud ${PROJECT_NAME}_utils ${catkin_LIBRARIES})
+
+  catkin_add_gtest(test_tf2_sensor_msgs test/test_tf2_sensor_msgs.cpp)
+  target_link_libraries(test_tf2_sensor_msgs ${PROJECT_NAME}_utils ${catkin_LIBRARIES})
+
+  catkin_add_gtest(test_obb test/test_obb.cpp)
+  target_link_libraries(test_obb ${PROJECT_NAME}_utils ${catkin_LIBRARIES})
+
+  add_rostest_gtest(test_filter_utils test/test_filter_utils.test test/test_filter_utils.cpp)
+  target_link_libraries(test_filter_utils ${PROJECT_NAME} ${catkin_LIBRARIES})
+
+  catkin_add_gtest(test_tf_frames_watchdog test/test_tf_frames_watchdog.cpp)
+  target_link_libraries(test_tf_frames_watchdog ${PROJECT_NAME} ${catkin_LIBRARIES})
+
+  catkin_add_gtest(test_ray_casting_shape_mask test/test_ray_casting_shape_mask.cpp)
+  target_link_libraries(test_ray_casting_shape_mask ${PROJECT_NAME} ${catkin_LIBRARIES})
+  if ("${CMAKE_BUILD_TYPE}" STREQUAL "Release" OR "${CMAKE_BUILD_TYPE}" STREQUAL "RelWithDebInfo")
+    target_compile_definitions(test_ray_casting_shape_mask PRIVATE RELEASE_BUILD=1)
+  else()
+    target_compile_definitions(test_ray_casting_shape_mask PRIVATE RELEASE_BUILD=0)
+  endif()
+
+  add_rostest_gtest(test_robot_body_filter test/test_robot_body_filter.test test/test_robot_body_filter.cpp)
+  target_link_libraries(test_robot_body_filter ${PROJECT_NAME} ${catkin_LIBRARIES})
+endif()
