@@ -1,6 +1,6 @@
 <package format="2">
   <name>robot_body_filter</name>
-  <version>1.1.6</version>
+  <version>1.1.7</version>
 
   <description>Filters the robot's body out of laser scans or point clouds.</description>
 
@@ -45,6 +45,8 @@
   <build_depend>pkg-config</build_depend>
   <build_depend>tf2_eigen</build_depend>
   <build_depend>tf2_sensor_msgs</build_depend>
+
+  <test_depend>rostest</test_depend>
 
   <export>
     <filters plugin="${prefix}/laser_filters.xml"/>
