@@ -1,3 +1,26 @@
+## robot_body_filter (noetic) - 1.1.8-1
+
+The packages in the `robot_body_filter` repository were released into the `noetic` distro by running `/usr/bin/bloom-release robot_body_filter --track noetic --rosdistro noetic --new-track` on `Mon, 12 Apr 2021 20:19:18 -0000`
+
+The `robot_body_filter` package was released.
+
+Version of package(s) in repository `robot_body_filter`:
+
+- upstream repository: https://github.com/peci1/robot_body_filter
+- release repository: unknown
+- rosdistro version: `null`
+- old version: `null`
+- new version: `1.1.8-1`
+
+Versions of tools used:
+
+- bloom version: `0.10.3`
+- catkin_pkg version: `0.4.23`
+- rosdep version: `0.20.0`
+- rosdistro version: `0.8.3`
+- vcstools version: `0.1.42`
+
+
 ## robot_body_filter (melodic) - 1.1.8-1
 
 The packages in the `robot_body_filter` repository were released into the `melodic` distro by running `/usr/bin/bloom-release -t melodic --ros-distro melodic robot_body_filter` on `Mon, 06 Apr 2020 14:49:13 -0000`
