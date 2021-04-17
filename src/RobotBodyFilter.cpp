@@ -560,7 +560,8 @@ bool RobotBodyFilterLaserScan::update(const LaserScan &inputScan, LaserScan &fil
     ROS_DEBUG("RobotBodyFilter: Scan transformation run time is %.5f secs.", double(clock()-stopwatchOverall) / CLOCKS_PER_SEC);
 
     vector<RayCastingShapeMask::MaskValue> pointMask;
-    const auto success = this->computeMask(projectedPointCloud, pointMask);
+    const auto success = this->computeMask(projectedPointCloud, pointMask, scanFrame);
+
     if (!success)
       return false;
 
@@ -1165,7 +1166,7 @@ void RobotBodyFilter<T>::computeAndPublishBoundingBox(
       const auto& shapeHandle = shapeHandleAndBody.first;
       const auto& body = shapeHandleAndBody.second;
       bodies::AxisAlignedBoundingBox box;
-      bodies::computeBoundingBox(body, box);
+      body->computeBoundingBox(box);
 
       if (this->shapesIgnoredInBoundingBox.find(shapeHandle) != this->shapesIgnoredInBoundingBox.end())
         continue;
@@ -1201,7 +1202,7 @@ void RobotBodyFilter<T>::computeAndPublishBoundingBox(
   if (this->computeBoundingBox)
   {
     bodies::AxisAlignedBoundingBox box;
-    bodies::mergeAxisAlignedBoundingBoxes(boxes, box);
+    bodies::mergeBoundingBoxes(boxes, box);
     const auto boxFloat = box.cast<float>();
 
     geometry_msgs::PolygonStamped boundingBoxMsg;
@@ -1436,7 +1437,7 @@ void RobotBodyFilter<T>::computeAndPublishLocalBoundingBox(
       bodies::AxisAlignedBoundingBox box;
       oldPose = body->getPose();
       body->setPose(localTf * oldPose);
-      bodies::computeBoundingBox(body, box);
+      body->computeBoundingBox(box);
       body->setPose(oldPose);
 
       boxes.push_back(box);
@@ -1469,7 +1470,7 @@ void RobotBodyFilter<T>::computeAndPublishLocalBoundingBox(
   if (this->computeLocalBoundingBox)
   {
     bodies::AxisAlignedBoundingBox box;
-    bodies::mergeAxisAlignedBoundingBoxes(boxes, box);
+    bodies::mergeBoundingBoxes(boxes, box);
 
     geometry_msgs::PolygonStamped boundingBoxMsg;
 
@@ -1623,6 +1624,7 @@ bool RobotBodyFilter<T>::triggerModelReload(std_srvs::TriggerRequest &,
   this->configured_ = true;
 
   ROS_INFO("RobotBodyFilter: Robot model reloaded, resuming filter operation.");
+  return true;
 }
 
 template<typename T>
