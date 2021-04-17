@@ -1,12 +1,3 @@
-/* HACK HACK HACK */
-/* We want to subclass ShapeMask and use its members. */
-// Upstream solution proposed in https://github.com/ros-planning/moveit/pull/1457
-#include <sstream>  // has to be there, otherwise we encounter build problems
-#define private protected
-#include <moveit/point_containment_filter/shape_mask.h>
-#undef private
-/* HACK END HACK */
-
 #include <robot_body_filter/RayCastingShapeMask.h>
 
 #include <geometric_shapes/body_operations.h>
@@ -228,7 +219,7 @@ void RayCastingShapeMask::classifyPointNoLock(const Eigen::Vector3d& data,
     for (const auto &seeShape : this->data->bodiesForShadowTest) {
       // get the 1st intersection of ray pt->sensor
       intersections.clear(); // intersectsRay doesn't clear the vector...
-      if (bodies::intersectsRay(seeShape.body, data, dir, &intersections, 1)) {
+      if (seeShape.body->intersectsRay(data, dir, &intersections, 1)) {
         // is the intersection between point and sensor?
         if (dir.dot(sensorPos - intersections[0]) >= 0.0) {
           mask = MaskValue::SHADOW;
