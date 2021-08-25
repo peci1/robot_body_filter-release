@@ -2,6 +2,12 @@
 Changelog for package robot_body_filter
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+1.2.2 (2021-08-25)
+------------------
+* Change ROS_WARN to ROS_INFO when loading a value of an undefined parameter
+* Add link to the youtube tutorial
+* Contributors: Martin Pecka
+
 1.2.1 (2021-08-06)
 ------------------
 * Merge pull request `#15 <https://github.com/peci1/robot_body_filter/issues/15>`_ from universal-field-robots/master
